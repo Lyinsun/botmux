@@ -300,9 +300,12 @@ describe('/btw relay wiring', () => {
       .toContain('renderer?.rawSnapshot({ preserveFormatting: true }) || lastAnalyzerSnapshot');
   });
 
-  it('only presses Esc while the freshest screen shows the overlay', () => {
+  it('only presses Esc while the freshest screen shows the overlay, re-checking after the renderer settles', () => {
     const fn = between(worker, 'function closeBtwOverlayIfVisible(', 'function giveUpBtwCapture(');
-    expect(fn).toMatch(/claudeBtwOverlayVisible\(btwOverlayScreen\(\)\)\)\s*\{\s*sendTermActionOnce\(backend, 'esc'\)/);
+    expect(fn).toMatch(/if \(claudeBtwOverlayVisible\(btwOverlayScreen\(\)\)\) \{[\s\S]*?sendTermActionOnce\(backend, 'esc'\)/);
+    expect(fn).toContain('closeBtwOverlayIfVisible(attempt + 1, generation)');
+    expect(fn).toContain('generation !== btwCaptureGeneration');
+    expect(worker).toContain('const BTW_CLOSE_CHECKS_MS = [100, 300, 700];');
   });
 
   it('throttles screen reads instead of debouncing them (a busy turn never goes quiet)', () => {

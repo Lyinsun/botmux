@@ -11490,6 +11490,7 @@ let btwCaptureTimer: ReturnType<typeof setTimeout> | null = null;
 let btwCopyTimer: ReturnType<typeof setTimeout> | null = null;
 let btwScreenCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let btwCopyAttempts = 0;
+let btwCaptureGeneration = 0;
 // A side question is answered without tools; give slow models room but never
 // leave the guard armed indefinitely.
 const BTW_ANSWER_WINDOW_MS = 180_000;
@@ -11515,6 +11516,7 @@ function armBtwCapture(question: string, turnId: string | undefined): void {
   // Remote runners deliver screens, not a byte stream with OSC 52.
   if (isRemoteBackendType(effectiveBackendType)) return;
   disarmBtwCapture();
+  btwCaptureGeneration += 1;
   btwCaptureGuard.arm(question);
   btwCaptureTurnId = turnId;
   btwCaptureTimer = setTimeout(() => {
@@ -11534,11 +11536,24 @@ function btwOverlayScreen(): string {
 
 /** Close the overlay, which otherwise swallows the next keystrokes botmux
  *  types (`f` forks, `x` clears history). Only while the freshest screen
- *  shows it: with the overlay gone, Esc would interrupt the running turn. */
-function closeBtwOverlayIfVisible(): void {
-  if (backend && claudeBtwOverlayVisible(btwOverlayScreen())) {
-    sendTermActionOnce(backend, 'esc');
-  }
+ *  shows it: with the overlay gone, Esc would interrupt the running turn.
+ *  The headless renderer parses asynchronously, so the repaint that came
+ *  with the triggering chunk (e.g. "Copied to clipboard") may be half
+ *  applied right now; look again a few times before concluding it is gone. */
+const BTW_CLOSE_CHECKS_MS = [100, 300, 700];
+
+function closeBtwOverlayIfVisible(attempt = 0, generation = btwCaptureGeneration): void {
+  const timer = setTimeout(() => {
+    // A newer `/btw` owns whatever overlay is on screen now.
+    if (!backend || generation !== btwCaptureGeneration) return;
+    if (claudeBtwOverlayVisible(btwOverlayScreen())) {
+      log('/btw overlay still open; closing it');
+      sendTermActionOnce(backend, 'esc');
+    } else if (attempt + 1 < BTW_CLOSE_CHECKS_MS.length) {
+      closeBtwOverlayIfVisible(attempt + 1, generation);
+    }
+  }, BTW_CLOSE_CHECKS_MS[attempt] - (BTW_CLOSE_CHECKS_MS[attempt - 1] ?? 0));
+  timer.unref?.();
 }
 
 function giveUpBtwCapture(): void {
