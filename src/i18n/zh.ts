@@ -1710,6 +1710,7 @@ export const messages: Record<string, string> = {
 
   // Adopt preamble card title
   'card.adopt_last_round': '📜 /adopt 前最后一轮',
+  'card.btw_answer': '💬 /btw 旁路回答',
   'card.local_turn_resumed': '🖥️ 终端本地对话续传（daemon 重启时模型正在输出）',
   'card.local_turn': '🖥️ 终端本地对话（在 adopted pane 中直接输入，已同步至飞书）',
   'card.codex_app_shared_turn': '🖥️ Codex App 共享对话（已同步至飞书）',

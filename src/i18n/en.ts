@@ -1709,6 +1709,7 @@ export const messages: Record<string, string> = {
 
   // Adopt preamble card title
   'card.adopt_last_round': '📜 Last exchange before /adopt',
+  'card.btw_answer': '💬 /btw side answer',
   'card.local_turn_resumed': '🖥️ Local terminal turn resumed (model was mid-output during the daemon restart)',
   'card.local_turn': '🖥️ Local terminal turn (typed directly in the adopted pane, synced to Lark)',
   'card.codex_app_shared_turn': '🖥️ Codex App shared turn (synced to Lark)',

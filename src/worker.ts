@@ -120,6 +120,12 @@ import {
 } from './services/web-terminal-settings-store.js';
 import { aidenCodexResumeNeedsRedraw, CodexUpdateDialogGuard, codexUpdateDialogSafeKeys } from './utils/codex-update-dialog.js';
 import { EffortConfirmDialogGuard, isEffortLevelCommand } from './utils/effort-confirm-dialog.js';
+import {
+  ClaudeBtwCaptureGuard,
+  claudeBtwOverlayVisible,
+  claudeBtwQuestion,
+  parseClaudeBtwOverlay,
+} from './utils/claude-btw-overlay.js';
 import { installStdioEpipeGuard, isIgnorableStreamError } from './utils/stdio-epipe-guard.js';
 import { resolveDarwinCodexCaBundle } from './utils/darwin-ca-bundle.js';
 import {
@@ -3353,6 +3359,10 @@ async function deliverRawInput(msg: Extract<DaemonToWorker, { type: 'raw_input' 
         // a dialog that renders during the acceptance wait is not missed. Bare
         // `/effort` opens a level picker (unknown target) and is left alone.
         if (isEffortLevelCommand(msg.content)) armEffortConfirm();
+        // `/btw <question>` answers in an overlay that never reaches the
+        // transcript; arm the capture before the bytes land.
+        const btwQuestion = claudeBtwQuestion(msg.content);
+        if (btwQuestion) armBtwCapture(btwQuestion, msg.turnId);
       });
       sent = true;
       if (fence && !adoptWriteFenceIsCurrent(fence)) {
@@ -3367,6 +3377,7 @@ async function deliverRawInput(msg: Extract<DaemonToWorker, { type: 'raw_input' 
         ? err.recoveryFailureReason
         : undefined;
       disarmEffortConfirm();
+      disarmBtwCapture();
       // Do not send a bundled follow-up or another queued command against a
       // backend whose literal command write failed.
       log(`Passthrough slash command failed (${msg.content}): ${err?.message ?? err}`);
@@ -11469,6 +11480,78 @@ function armEffortConfirm(): void {
   }, EFFORT_CONFIRM_WINDOW_MS);
 }
 
+// Relay Claude Code's `/btw` side answer to the IM thread. The answer only
+// lives in an overlay (never in the transcript), so the worker presses `c`
+// once it is complete and forwards the OSC 52 clipboard payload. Armed only
+// by botmux's own `/btw <question>` passthrough; see claude-btw-overlay.ts.
+const btwCaptureGuard = new ClaudeBtwCaptureGuard();
+let btwCaptureTurnId: string | undefined;
+let btwCaptureTimer: ReturnType<typeof setTimeout> | null = null;
+let btwCopyTimer: ReturnType<typeof setTimeout> | null = null;
+// A side question is answered without tools; give slow models room but never
+// leave the guard armed indefinitely.
+const BTW_ANSWER_WINDOW_MS = 180_000;
+// The OSC 52 payload follows the `c` keypress almost immediately.
+const BTW_COPY_WINDOW_MS = 3_000;
+
+function disarmBtwCapture(): void {
+  if (btwCaptureTimer) {
+    clearTimeout(btwCaptureTimer);
+    btwCaptureTimer = null;
+  }
+  if (btwCopyTimer) {
+    clearTimeout(btwCopyTimer);
+    btwCopyTimer = null;
+  }
+  btwCaptureGuard.disarm();
+  btwCaptureTurnId = undefined;
+}
+
+function armBtwCapture(question: string, turnId: string | undefined): void {
+  if (lastInitConfig?.cliId !== 'claude-code' || lastInitConfig.adoptMode) return;
+  disarmBtwCapture();
+  btwCaptureGuard.arm(question);
+  btwCaptureTurnId = turnId;
+  btwCaptureTimer = setTimeout(() => {
+    btwCaptureTimer = null;
+    log('/btw answer not captured within the answer window; giving up');
+    disarmBtwCapture();
+  }, BTW_ANSWER_WINDOW_MS);
+}
+
+function currentBtwScreen(): string {
+  return renderer?.rawSnapshot() || lastAnalyzerSnapshot || '';
+}
+
+/** Send the captured answer and close the overlay. The overlay swallows
+ *  keystrokes, so leaving it open would eat the next message botmux types.
+ *  Esc is only sent while the overlay is still on screen — with the overlay
+ *  gone, Esc would interrupt the running turn instead. */
+function deliverBtwAnswer(answer: string, source: 'clipboard' | 'screen'): void {
+  const question = btwCaptureGuard.question;
+  const turnId = btwCaptureTurnId;
+  disarmBtwCapture();
+  log(`/btw answer captured from ${source} (${answer.length} chars)`);
+  send({ type: 'btw_answer', question, answer, ...(turnId ? { turnId } : {}) });
+  if (backend && claudeBtwOverlayVisible(currentBtwScreen())) {
+    sendTermActionOnce(backend, 'esc');
+  }
+}
+
+/** Fallback when no OSC 52 arrives (e.g. a terminal path that drops it):
+ *  read the answer from the rendered overlay. */
+function finishBtwCaptureFromScreen(): void {
+  btwCopyTimer = null;
+  if (!btwCaptureGuard.isCopying()) return;
+  const overlay = parseClaudeBtwOverlay(currentBtwScreen());
+  if (overlay?.state === 'done' && overlay.answer) {
+    deliverBtwAnswer(overlay.answer, 'screen');
+    return;
+  }
+  log('/btw answer finished but neither the clipboard nor the screen yielded it');
+  disarmBtwCapture();
+}
+
 /**
  * Aiden refuses the Codex `-c check_for_update_on_startup=false` override.
  * If that wrapper still exposes the startup update picker, move from its
@@ -12807,6 +12890,19 @@ function handlePtyDataChunk(data: string): void {
       backend?.write('\r');
     }
     return;
+  }
+
+  // `/btw` side answer relay. Armed only by our own `/btw <question>`
+  // passthrough. The keypresses here target the overlay, not the composer.
+  if (btwCaptureGuard.isArmed()) {
+    const action = btwCaptureGuard.inspect(data);
+    if (action.kind === 'copy' && backend) {
+      btwCaptureGuard.markCopyRequested();
+      backend.write('c');
+      btwCopyTimer = setTimeout(finishBtwCaptureFromScreen, BTW_COPY_WINDOW_MS);
+    } else if (action.kind === 'answer') {
+      deliverBtwAnswer(action.text, 'clipboard');
+    }
   }
 
   // Track last PTY output time for the ready-gate quiescence settle (see
@@ -21184,6 +21280,7 @@ function killCli(opts: {
   aidenCodexUpdateAttempts = 0;
   aidenCodexUpdateLimitNotified = false;
   disarmEffortConfirm();
+  disarmBtwCapture();
   appRunnerControlDecoder.reset();
 }
 
