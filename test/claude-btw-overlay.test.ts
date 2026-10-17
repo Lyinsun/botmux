@@ -160,6 +160,14 @@ describe('ClaudeBtwCaptureGuard.inspectData', () => {
     expect(guard.question).toBe('');
   });
 
+  it('finds a start marker split across chunks', () => {
+    const guard = copyingGuard('q');
+    const payload = `noise${osc52('split')}`;
+    const cut = payload.indexOf('\x1b]52;') + 3;
+    expect(guard.inspectData(payload.slice(0, cut))).toEqual({ kind: 'pass' });
+    expect(guard.inspectData(payload.slice(cut))).toEqual({ kind: 'answer', text: 'split', question: 'q' });
+  });
+
   it('ignores clipboard sequences before the copy request', () => {
     const guard = new ClaudeBtwCaptureGuard();
     guard.arm('q');
@@ -292,10 +300,19 @@ describe('/btw relay wiring', () => {
       .toContain('renderer?.rawSnapshot({ preserveFormatting: true }) || lastAnalyzerSnapshot');
   });
 
-  it('only presses Esc when every screen source shows the overlay', () => {
+  it('only presses Esc while the freshest screen shows the overlay', () => {
     const fn = between(worker, 'function closeBtwOverlayIfVisible(', 'function giveUpBtwCapture(');
-    expect(fn).toContain('screens.length > 0 && screens.every(claudeBtwOverlayVisible)');
-    expect(fn).toContain("sendTermActionOnce(backend, 'esc')");
+    expect(fn).toMatch(/claudeBtwOverlayVisible\(btwOverlayScreen\(\)\)\)\s*\{\s*sendTermActionOnce\(backend, 'esc'\)/);
+  });
+
+  it('throttles screen reads instead of debouncing them (a busy turn never goes quiet)', () => {
+    expect(between(worker, 'function scheduleBtwScreenCheck(', 'function checkBtwOverlayScreen('))
+      .toMatch(/if \(btwScreenCheckTimer\) return;/);
+  });
+
+  it('does not arm on remote runner backends', () => {
+    expect(between(worker, 'function armBtwCapture(', 'function btwOverlayScreen('))
+      .toContain('if (isRemoteBackendType(effectiveBackendType)) return;');
   });
 
   it('closes the overlay on delivery and on every give-up path', () => {
@@ -328,5 +345,11 @@ describe('/btw relay wiring', () => {
     expect(gate).toBeGreaterThan(0);
     expect(reply).toBeGreaterThan(gate);
     expect(region).toContain("tr('card.btw_answer'");
+  });
+
+  it('daemon caps long answers and marks screen-read ones as possibly partial', () => {
+    const region = between(pool, "case 'btw_answer':", "case 'adopt_preamble':");
+    expect(region).toContain('msg.answer.length > BTW_ANSWER_MAX_CHARS');
+    expect(region).toContain("if (msg.source === 'screen')");
   });
 });

@@ -11481,11 +11481,9 @@ function armEffortConfirm(): void {
   effortConfirmTimer.unref?.();
 }
 
-// Relay Claude Code's `/btw` side answer to the IM thread. The answer only
-// lives in an overlay (never in the transcript), so the worker watches the
-// rendered screen for our overlay to finish, presses `c`, and forwards the
-// OSC 52 clipboard payload. Armed only by botmux's own `/btw <question>`
-// passthrough; see claude-btw-overlay.ts.
+// Relay Claude Code's `/btw` side answer to the IM thread: watch the screen
+// for our overlay to finish, press `c`, forward the OSC 52 payload. Armed
+// only by botmux's own `/btw <question>` passthrough; see claude-btw-overlay.ts.
 const btwCaptureGuard = new ClaudeBtwCaptureGuard();
 let btwCaptureTurnId: string | undefined;
 let btwCaptureTimer: ReturnType<typeof setTimeout> | null = null;
@@ -11497,17 +11495,16 @@ let btwCopyAttempts = 0;
 const BTW_ANSWER_WINDOW_MS = 180_000;
 // The OSC 52 payload follows the `c` keypress almost immediately.
 const BTW_COPY_WINDOW_MS = 3_000;
-// Let the headless renderer parse a burst of repaint chunks before reading.
-const BTW_SCREEN_SETTLE_MS = 150;
+// Screen reads are throttled, not debounced: a busy main turn repaints its
+// spinner continuously, so a quiet window may never come.
+const BTW_SCREEN_CHECK_MS = 150;
 const BTW_MAX_COPY_ATTEMPTS = 3;
 
 function disarmBtwCapture(): void {
-  for (const timer of [btwCaptureTimer, btwCopyTimer, btwScreenCheckTimer]) {
-    if (timer) clearTimeout(timer);
-  }
-  btwCaptureTimer = null;
-  btwCopyTimer = null;
-  btwScreenCheckTimer = null;
+  if (btwCaptureTimer) clearTimeout(btwCaptureTimer);
+  if (btwCopyTimer) clearTimeout(btwCopyTimer);
+  if (btwScreenCheckTimer) clearTimeout(btwScreenCheckTimer);
+  btwCaptureTimer = btwCopyTimer = btwScreenCheckTimer = null;
   btwCopyAttempts = 0;
   btwCaptureGuard.disarm();
   btwCaptureTurnId = undefined;
@@ -11515,6 +11512,8 @@ function disarmBtwCapture(): void {
 
 function armBtwCapture(question: string, turnId: string | undefined): void {
   if (lastInitConfig?.cliId !== 'claude-code' || lastInitConfig.adoptMode) return;
+  // Remote runners deliver screens, not a byte stream with OSC 52.
+  if (isRemoteBackendType(effectiveBackendType)) return;
   disarmBtwCapture();
   btwCaptureGuard.arm(question);
   btwCaptureTurnId = turnId;
@@ -11526,23 +11525,18 @@ function armBtwCapture(question: string, turnId: string | undefined): void {
   btwCaptureTimer.unref?.();
 }
 
-/** Screen for reading the overlay. The live renderer (fed every PTY chunk)
- *  rather than lastAnalyzerSnapshot, which refreshes at most every 2s; with
- *  preserveFormatting so indentation (question vs. answer, nested lists)
- *  survives — the display cleanup collapses runs of spaces. */
+/** The live renderer (fed every PTY chunk) rather than lastAnalyzerSnapshot,
+ *  which refreshes at most every 2s; with preserveFormatting so indentation
+ *  (question vs. answer, nested lists) survives. */
 function btwOverlayScreen(): string {
   return renderer?.rawSnapshot({ preserveFormatting: true }) || lastAnalyzerSnapshot || '';
 }
 
 /** Close the overlay, which otherwise swallows the next keystrokes botmux
- *  types (`f` forks, `x` clears history). Esc is only sent when every screen
- *  source agrees the overlay is up: with the overlay gone, Esc would
- *  interrupt the running turn instead. */
+ *  types (`f` forks, `x` clears history). Only while the freshest screen
+ *  shows it: with the overlay gone, Esc would interrupt the running turn. */
 function closeBtwOverlayIfVisible(): void {
-  if (!backend) return;
-  const screens = [renderer?.rawSnapshot({ preserveFormatting: true }), lastAnalyzerSnapshot]
-    .filter((screen): screen is string => !!screen);
-  if (screens.length > 0 && screens.every(claudeBtwOverlayVisible)) {
+  if (backend && claudeBtwOverlayVisible(btwOverlayScreen())) {
     sendTermActionOnce(backend, 'esc');
   }
 }
@@ -11556,13 +11550,13 @@ function deliverBtwAnswer(question: string, answer: string, source: 'clipboard' 
   const turnId = btwCaptureTurnId;
   disarmBtwCapture();
   log(`/btw answer captured from ${source} (${answer.length} chars)`);
-  send({ type: 'btw_answer', question, answer, ...(turnId ? { turnId } : {}) });
+  send({ type: 'btw_answer', question, answer, source, ...(turnId ? { turnId } : {}) });
   closeBtwOverlayIfVisible();
 }
 
 function scheduleBtwScreenCheck(): void {
-  if (btwScreenCheckTimer) clearTimeout(btwScreenCheckTimer);
-  btwScreenCheckTimer = setTimeout(checkBtwOverlayScreen, BTW_SCREEN_SETTLE_MS);
+  if (btwScreenCheckTimer) return;
+  btwScreenCheckTimer = setTimeout(checkBtwOverlayScreen, BTW_SCREEN_CHECK_MS);
   btwScreenCheckTimer.unref?.();
 }
 
@@ -11576,9 +11570,9 @@ function checkBtwOverlayScreen(): void {
   btwCopyTimer.unref?.();
 }
 
-/** No OSC 52 arrived after `c` (e.g. a terminal path that drops it): read
- *  the answer from the rendered overlay. Only a finished overlay is used; if
- *  it is (still) answering, wait for the finished footer again. */
+/** No OSC 52 arrived after `c`: read the answer from the rendered overlay
+ *  (viewport only, so the daemon marks it as possibly partial). If the
+ *  overlay is still answering, wait for the finished footer again. */
 function finishBtwCaptureFromScreen(): void {
   btwCopyTimer = null;
   if (!btwCaptureGuard.isCopying()) return;
