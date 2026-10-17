@@ -8,18 +8,16 @@ import {
   extractOsc52Text,
   parseClaudeBtwOverlay,
 } from '../src/utils/claude-btw-overlay.js';
+import { TerminalRenderer } from '../src/utils/terminal-renderer.js';
 
-// Screens and byte shapes captured from Claude Code v2.1.300 in tmux.
-const ANSWERING_CHUNK = [
-  '\x1b[38;5;153m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\x1b[39m\r\n',
-  '    \x1b[1m\x1b[38;5;220m/btw \x1b[0m\x1b[38;5;246mwhat is 1+1? answer in two short sentences\x1b[39m\r\n',
-  '      \x1b[38;5;220m✽\x1b[39m \x1b[38;5;220mAnswering…\x1b[39m\r\n',
-  '    \x1b[38;5;246mEsc to close\x1b[39m\r\n',
-].join('');
-const DONE_CHUNK = [
-  '      1 + 1 equals 2. This is the basic sum of two ones.\r\n',
-  '    \x1b[38;5;246m↑/↓ to scroll · c to copy · f to fork · Esc to close\x1b[39m\r\n',
-].join('');
+// Screens captured from Claude Code v2.1.300.
+const ANSWERING_SCREEN = [
+  '✻ Cogitated for 7s · done 1:06 PM · 1 shell still running',
+  '▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔',
+  '    /btw what is 1+1?',
+  '      ✽ Answering…',
+  '    Esc to close',
+].join('\n');
 
 const DONE_SCREEN = [
   '✻ Cogitated for 7s · done 1:06 PM · 1 shell still running',
@@ -33,8 +31,23 @@ const DONE_SCREEN = [
   '    ⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close',
 ].join('\n');
 
+function screen(question: string, body: string[], footer: string): string {
+  return ['▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔', `    /btw ${question}`, ...body.map(l => `      ${l}`), `    ${footer}`].join('\n');
+}
+const DONE_FOOTER = '↑/↓ to scroll · c to copy · f to fork · Esc to close';
+
 function osc52(text: string, terminator = '\x07'): string {
   return `\x1b]52;c;${Buffer.from(text, 'utf8').toString('base64')}${terminator}`;
+}
+
+/** Arm a guard and walk it through answering → done → copy request. */
+function copyingGuard(question: string): ClaudeBtwCaptureGuard {
+  const guard = new ClaudeBtwCaptureGuard();
+  guard.arm(question);
+  guard.inspectScreen(screen(question, ['✽ Answering…'], 'Esc to close'));
+  expect(guard.inspectScreen(screen(question, ['answer'], DONE_FOOTER))).toEqual({ kind: 'copy' });
+  guard.markCopyRequested();
+  return guard;
 }
 
 describe('claudeBtwQuestion', () => {
@@ -63,42 +76,82 @@ describe('extractOsc52Text', () => {
   });
 
   it('waits for the terminator', () => {
-    const full = osc52('answer');
-    expect(extractOsc52Text(full.slice(0, -1))).toBeUndefined();
+    expect(extractOsc52Text(osc52('answer').slice(0, -1))).toBeUndefined();
   });
 });
 
-describe('ClaudeBtwCaptureGuard', () => {
+describe('ClaudeBtwCaptureGuard.inspectScreen', () => {
   it('does nothing until armed', () => {
     const guard = new ClaudeBtwCaptureGuard();
-    expect(guard.inspect(ANSWERING_CHUNK + DONE_CHUNK)).toEqual({ kind: 'pass' });
+    expect(guard.inspectScreen(screen('q', ['a'], DONE_FOOTER))).toEqual({ kind: 'pass' });
     expect(guard.isArmed()).toBe(false);
   });
 
-  it('asks to copy only once the finished footer renders', () => {
+  it('copies only after seeing our overlay answer and then finish', () => {
     const guard = new ClaudeBtwCaptureGuard();
     guard.arm('what is 1+1?');
-    expect(guard.inspect(ANSWERING_CHUNK)).toEqual({ kind: 'pass' });
-    expect(guard.inspect(DONE_CHUNK)).toEqual({ kind: 'copy' });
+    expect(guard.inspectScreen(ANSWERING_SCREEN)).toEqual({ kind: 'pass' });
+    expect(guard.inspectScreen(screen('what is 1+1?', ['2'], DONE_FOOTER))).toEqual({ kind: 'copy' });
   });
 
-  it('detects the footer when it is split across chunks', () => {
-    const guard = new ClaudeBtwCaptureGuard();
-    guard.arm('q');
-    const cut = DONE_CHUNK.indexOf('to copy') + 3;
-    expect(guard.inspect(DONE_CHUNK.slice(0, cut))).toEqual({ kind: 'pass' });
-    expect(guard.inspect(DONE_CHUNK.slice(cut))).toEqual({ kind: 'copy' });
-  });
-
-  it('returns the clipboard answer after the copy request and disarms', () => {
+  it('never copies a finished overlay it did not see answering (stale or foreign overlay)', () => {
     const guard = new ClaudeBtwCaptureGuard();
     guard.arm('what is 1+1?');
-    guard.inspect(DONE_CHUNK);
-    guard.markCopyRequested();
-    expect(guard.isCopying()).toBe(true);
+    expect(guard.inspectScreen(screen('what is 1+1?', ['2'], DONE_FOOTER))).toEqual({ kind: 'pass' });
+  });
+
+  it('ignores an overlay for a different question', () => {
+    const guard = new ClaudeBtwCaptureGuard();
+    guard.arm('second question');
+    guard.inspectScreen(screen('first question', ['✽ Answering…'], 'Esc to close'));
+    expect(guard.inspectScreen(screen('first question', ['a'], DONE_FOOTER))).toEqual({ kind: 'pass' });
+  });
+
+  it('is not triggered by an answer that talks about the shortcuts', () => {
+    const q = 'how do I copy your answer?';
+    const guard = new ClaudeBtwCaptureGuard();
+    guard.arm(q);
+    guard.inspectScreen(screen(q, ['✽ Answering…'], 'Esc to close'));
+    // Streaming, footer still the answering one; body mentions the footer words.
+    const streaming = screen(q, ['Sure: press c to copy · f to fork · Esc to close', 'and then…'], 'Esc to close');
+    expect(guard.inspectScreen(streaming)).toEqual({ kind: 'pass' });
+  });
+
+  it('is not triggered by a question that echoes the shortcuts', () => {
+    const q = 'how do I press c to copy · f to fork · Esc to close?';
+    const guard = new ClaudeBtwCaptureGuard();
+    guard.arm(q);
+    expect(guard.inspectScreen(screen(q, ['✽ Answering…'], 'Esc to close'))).toEqual({ kind: 'pass' });
+    expect(guard.inspectScreen(screen(q, ['use the footer keys'], DONE_FOOTER))).toEqual({ kind: 'copy' });
+  });
+
+  it('never copies when no overlay renders (old CLI, command error)', () => {
+    const guard = new ClaudeBtwCaptureGuard();
+    guard.arm('how do I press c to copy and Esc to close?');
+    const noOverlay = [
+      '❯ /btw how do I press c to copy and Esc to close?',
+      '  ⎿  Unknown command: /btw how do I press c to copy · f to fork · Esc to close',
+      '───────────',
+      '❯ ',
+    ].join('\n');
+    expect(guard.inspectScreen(noOverlay)).toEqual({ kind: 'pass' });
+    expect(guard.inspectScreen(noOverlay)).toEqual({ kind: 'pass' });
+  });
+
+  it('can go back to waiting after a premature copy request', () => {
+    const guard = copyingGuard('q');
+    guard.revertToAnswering();
+    expect(guard.isCopying()).toBe(false);
+    expect(guard.inspectScreen(screen('q', ['final answer'], DONE_FOOTER))).toEqual({ kind: 'copy' });
+  });
+});
+
+describe('ClaudeBtwCaptureGuard.inspectData', () => {
+  it('returns the clipboard answer with its question and disarms', () => {
+    const guard = copyingGuard('what is 1+1?');
     const payload = osc52('1 + 1 equals 2.\n\n- **bold** item');
-    expect(guard.inspect(payload.slice(0, 10))).toEqual({ kind: 'pass' });
-    expect(guard.inspect(payload.slice(10))).toEqual({
+    expect(guard.inspectData(payload.slice(0, 10))).toEqual({ kind: 'pass' });
+    expect(guard.inspectData(payload.slice(10))).toEqual({
       kind: 'answer',
       text: '1 + 1 equals 2.\n\n- **bold** item',
       question: 'what is 1+1?',
@@ -110,16 +163,8 @@ describe('ClaudeBtwCaptureGuard', () => {
   it('ignores clipboard sequences before the copy request', () => {
     const guard = new ClaudeBtwCaptureGuard();
     guard.arm('q');
-    expect(guard.inspect(osc52('stale'))).toEqual({ kind: 'pass' });
-    expect(guard.isCopying()).toBe(false);
-  });
-
-  it('re-arming forgets a previous overlay footer', () => {
-    const guard = new ClaudeBtwCaptureGuard();
-    guard.arm('first');
-    guard.inspect(DONE_CHUNK.slice(0, DONE_CHUNK.indexOf('Esc')));
-    guard.arm('second');
-    expect(guard.inspect('Esc to close')).toEqual({ kind: 'pass' });
+    expect(guard.inspectData(osc52('stale'))).toEqual({ kind: 'pass' });
+    expect(guard.isArmed()).toBe(true);
   });
 });
 
@@ -138,55 +183,150 @@ describe('parseClaudeBtwOverlay', () => {
   });
 
   it('reports an in-progress answer without text', () => {
-    const screen = [
-      '    /btw what is 1+1?',
-      '      ✽ Answering…',
-      '    Esc to close',
-    ].join('\n');
-    expect(parseClaudeBtwOverlay(screen)).toEqual({ state: 'answering', question: 'what is 1+1?', answer: '' });
-    expect(claudeBtwOverlayVisible(screen)).toBe(true);
+    expect(parseClaudeBtwOverlay(ANSWERING_SCREEN)).toEqual({ state: 'answering', question: 'what is 1+1?', answer: '' });
+    expect(claudeBtwOverlayVisible(ANSWERING_SCREEN)).toBe(true);
+  });
+
+  it('accepts the transient "Copied to clipboard" footer', () => {
+    const copied = screen('q', ['a'], '↑/↓ to scroll · Copied to clipboard · f to fork · Esc to close');
+    expect(parseClaudeBtwOverlay(copied)?.state).toBe('done');
+  });
+
+  it('is not hijacked by a deeper /btw example inside the answer', () => {
+    const s = screen('how do I ask a side question?', ['Type it like this:', '  /btw what does this function do?', 'and press Enter.'], DONE_FOOTER);
+    expect(parseClaudeBtwOverlay(s)).toEqual({
+      state: 'done',
+      question: 'how do I ask a side question?',
+      answer: 'Type it like this:\n  /btw what does this function do?\nand press Enter.',
+    });
+  });
+
+  it('requires a whole-line footer at the question depth', () => {
+    const footerInBody = screen('q', ['c to copy · f to fork · Esc to close'], 'still typing');
+    expect(parseClaudeBtwOverlay(footerInBody)).toBeUndefined();
+    expect(claudeBtwOverlayVisible(footerInBody)).toBe(false);
   });
 
   it('returns undefined when no overlay is on screen', () => {
-    const screen = [
+    const s = [
       '● ok',
       '───────────',
       '❯ /btw typed but not submitted',
       '───────────',
       '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
     ].join('\n');
-    expect(parseClaudeBtwOverlay(screen)).toBeUndefined();
-    expect(claudeBtwOverlayVisible(screen)).toBe(false);
+    expect(parseClaudeBtwOverlay(s)).toBeUndefined();
+    expect(claudeBtwOverlayVisible(s)).toBe(false);
+  });
+});
+
+describe('real Claude Code PTY bytes through the headless renderer', () => {
+  // Raw tmux pipe-pane output of Claude Code v2.1.300 (159x51 pane): a
+  // running turn, `/btw …`, the answering overlay, the finished overlay
+  // (painted differentially — the footer is not one contiguous string in the
+  // stream), then the `c` press with its OSC 52 copy.
+  const raw = readFileSync(resolve(__dirname, 'fixtures/claude-btw-overlay.pty'), 'utf8');
+  const question = '用中文列出三个 Markdown 语法要点，每条一行，带一个加粗词';
+  const cut = (marker: string, from: number) => raw.indexOf(marker, from) + marker.length;
+
+  it('drives answering → copy → OSC 52 answer, with nested Markdown preserved', async () => {
+    const r = new TerminalRenderer(159, 51);
+    const guard = new ClaudeBtwCaptureGuard();
+    guard.arm(question);
+    const view = () => r.rawSnapshot({ preserveFormatting: true });
+
+    const answering = cut('Esc to close\x1b[39m\x1b[K\x1b[51;1H', 0);
+    await r.writeAndFlush(raw.slice(0, answering));
+    expect(parseClaudeBtwOverlay(view())?.state).toBe('answering');
+    expect(guard.inspectScreen(view())).toEqual({ kind: 'pass' });
+
+    const done = cut('to close\x1b[39m\x1b[51;1H', answering);
+    await r.writeAndFlush(raw.slice(answering, done));
+    const overlay = parseClaudeBtwOverlay(view());
+    expect(overlay?.question).toBe(question);
+    expect(overlay?.answer.split('\n')).toEqual([
+      '- 标题：在行首加 # 号，数量越多层级越低，例如 ## 小节。',
+      '- 列表：行首用 - 或 1. 开头，每项占一行。',
+      '- 代码：用反引号包住行内代码，用三个反引号包住代码块。',
+    ]);
+    expect(guard.inspectScreen(view())).toEqual({ kind: 'copy' });
+    guard.markCopyRequested();
+
+    // Up to the end of the OSC 52 copy (the fixture continues past the Esc).
+    const copied = raw.indexOf('\x07', raw.indexOf('\x1b]52;', done)) + 1;
+    const rest = raw.slice(done, copied);
+    await r.writeAndFlush(rest);
+    const action = guard.inspectData(rest);
+    expect(action.kind).toBe('answer');
+    expect(action.kind === 'answer' && action.text).toContain('- **标题**：在行首加 `#` 号');
+    expect(action.kind === 'answer' && action.question).toBe(question);
+    // The overlay is still up after the copy, so Esc would close it…
+    expect(claudeBtwOverlayVisible(view())).toBe(true);
+    // …and once the fixture's Esc lands, it is gone (no second Esc).
+    await r.writeAndFlush(raw.slice(copied));
+    expect(claudeBtwOverlayVisible(view())).toBe(false);
+  });
+
+  it('the display-cleaned snapshot also recognises the overlay (Esc gate)', async () => {
+    const r = new TerminalRenderer(159, 51);
+    await r.writeAndFlush(raw.slice(0, cut('to close\x1b[39m\x1b[51;1H', cut('Esc to close\x1b[39m\x1b[K\x1b[51;1H', 0))));
+    expect(claudeBtwOverlayVisible(r.rawSnapshot())).toBe(true);
   });
 });
 
 describe('/btw relay wiring', () => {
   const worker = readFileSync(resolve(__dirname, '../src/worker.ts'), 'utf8');
   const pool = readFileSync(resolve(__dirname, '../src/core/worker-pool.ts'), 'utf8');
+  const between = (src: string, a: string, b: string) => src.slice(src.indexOf(a), src.indexOf(b, src.indexOf(a)));
 
   it('arms the capture from the raw passthrough write, claude-code only', () => {
     const deliver = worker.slice(worker.indexOf('async function deliverRawInput('));
     expect(deliver.slice(0, 6_000)).toContain('if (btwQuestion) armBtwCapture(btwQuestion, msg.turnId);');
-    const arm = worker.slice(worker.indexOf('function armBtwCapture('), worker.indexOf('function currentBtwScreen('));
+    const arm = between(worker, 'function armBtwCapture(', 'function btwOverlayScreen(');
     expect(arm).toContain("lastInitConfig?.cliId !== 'claude-code' || lastInitConfig.adoptMode");
+    expect(arm).toContain('btwCaptureTimer.unref?.()');
   });
 
-  it('only presses Esc while the overlay is still visible', () => {
-    const fn = worker.slice(worker.indexOf('function deliverBtwAnswer('), worker.indexOf('function finishBtwCaptureFromScreen('));
-    expect(fn).toMatch(/claudeBtwOverlayVisible\(currentBtwScreen\(\)\)\)\s*\{\s*sendTermActionOnce\(backend, 'esc'\)/);
+  it('reads the overlay from the live renderer with formatting preserved', () => {
+    expect(between(worker, 'function btwOverlayScreen(', 'function closeBtwOverlayIfVisible('))
+      .toContain('renderer?.rawSnapshot({ preserveFormatting: true }) || lastAnalyzerSnapshot');
   });
 
-  it('disarms on CLI respawn', () => {
-    expect(worker).toMatch(/disarmEffortConfirm\(\);\n\s*disarmBtwCapture\(\);\n\s*appRunnerControlDecoder\.reset\(\);/);
+  it('only presses Esc when every screen source shows the overlay', () => {
+    const fn = between(worker, 'function closeBtwOverlayIfVisible(', 'function giveUpBtwCapture(');
+    expect(fn).toContain('screens.length > 0 && screens.every(claudeBtwOverlayVisible)');
+    expect(fn).toContain("sendTermActionOnce(backend, 'esc')");
+  });
+
+  it('closes the overlay on delivery and on every give-up path', () => {
+    expect(between(worker, 'function giveUpBtwCapture(', 'function deliverBtwAnswer(')).toContain('closeBtwOverlayIfVisible();');
+    expect(between(worker, 'function deliverBtwAnswer(', 'function scheduleBtwScreenCheck(')).toContain('closeBtwOverlayIfVisible();');
+    const fallback = between(worker, 'function finishBtwCaptureFromScreen(', '/**\n * Aiden refuses');
+    expect(fallback).toContain('btwCaptureGuard.revertToAnswering();');
+    expect(fallback).toContain('giveUpBtwCapture();');
+    const timeout = between(worker, 'function armBtwCapture(', 'function btwOverlayScreen(');
+    expect(timeout).toContain('giveUpBtwCapture();');
+  });
+
+  it('a failed passthrough write disarms without pressing Esc', () => {
+    const deliver = worker.slice(worker.indexOf('async function deliverRawInput('));
+    expect(deliver.slice(0, 8_000)).toMatch(/disarmEffortConfirm\(\);\n\s*disarmBtwCapture\(\);\n\s*\/\/ Do not send a bundled follow-up/);
   });
 
   it('passes the question from the answer action, not the disarmed guard', () => {
     expect(worker).toContain("deliverBtwAnswer(action.question, action.text, 'clipboard');");
   });
 
-  it('daemon replies under the /btw turn', () => {
-    const region = pool.slice(pool.indexOf("case 'btw_answer':"), pool.indexOf("case 'adopt_preamble':"));
-    expect(region).toContain("scopedReply(cardJson, 'interactive', msg.turnId)");
+  it('disarms on CLI respawn', () => {
+    expect(worker).toMatch(/disarmEffortConfirm\(\);\n\s*disarmBtwCapture\(\);\n\s*appRunnerControlDecoder\.reset\(\);/);
+  });
+
+  it('daemon honours the managed aux-UI gate and replies under the /btw turn', () => {
+    const region = between(pool, "case 'btw_answer':", "case 'adopt_preamble':");
+    const gate = region.indexOf('if (managedAuxUiSuppressed(msg.turnId)) break;');
+    const reply = region.indexOf("scopedReply(cardJson, 'interactive', msg.turnId)");
+    expect(gate).toBeGreaterThan(0);
+    expect(reply).toBeGreaterThan(gate);
     expect(region).toContain("tr('card.btw_answer'");
   });
 });

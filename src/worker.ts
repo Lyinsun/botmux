@@ -11478,31 +11478,37 @@ function armEffortConfirm(): void {
     effortConfirmTimer = null;
     effortConfirmGuard.disarm();
   }, EFFORT_CONFIRM_WINDOW_MS);
+  effortConfirmTimer.unref?.();
 }
 
 // Relay Claude Code's `/btw` side answer to the IM thread. The answer only
-// lives in an overlay (never in the transcript), so the worker presses `c`
-// once it is complete and forwards the OSC 52 clipboard payload. Armed only
-// by botmux's own `/btw <question>` passthrough; see claude-btw-overlay.ts.
+// lives in an overlay (never in the transcript), so the worker watches the
+// rendered screen for our overlay to finish, presses `c`, and forwards the
+// OSC 52 clipboard payload. Armed only by botmux's own `/btw <question>`
+// passthrough; see claude-btw-overlay.ts.
 const btwCaptureGuard = new ClaudeBtwCaptureGuard();
 let btwCaptureTurnId: string | undefined;
 let btwCaptureTimer: ReturnType<typeof setTimeout> | null = null;
 let btwCopyTimer: ReturnType<typeof setTimeout> | null = null;
+let btwScreenCheckTimer: ReturnType<typeof setTimeout> | null = null;
+let btwCopyAttempts = 0;
 // A side question is answered without tools; give slow models room but never
 // leave the guard armed indefinitely.
 const BTW_ANSWER_WINDOW_MS = 180_000;
 // The OSC 52 payload follows the `c` keypress almost immediately.
 const BTW_COPY_WINDOW_MS = 3_000;
+// Let the headless renderer parse a burst of repaint chunks before reading.
+const BTW_SCREEN_SETTLE_MS = 150;
+const BTW_MAX_COPY_ATTEMPTS = 3;
 
 function disarmBtwCapture(): void {
-  if (btwCaptureTimer) {
-    clearTimeout(btwCaptureTimer);
-    btwCaptureTimer = null;
+  for (const timer of [btwCaptureTimer, btwCopyTimer, btwScreenCheckTimer]) {
+    if (timer) clearTimeout(timer);
   }
-  if (btwCopyTimer) {
-    clearTimeout(btwCopyTimer);
-    btwCopyTimer = null;
-  }
+  btwCaptureTimer = null;
+  btwCopyTimer = null;
+  btwScreenCheckTimer = null;
+  btwCopyAttempts = 0;
   btwCaptureGuard.disarm();
   btwCaptureTurnId = undefined;
 }
@@ -11515,40 +11521,80 @@ function armBtwCapture(question: string, turnId: string | undefined): void {
   btwCaptureTimer = setTimeout(() => {
     btwCaptureTimer = null;
     log('/btw answer not captured within the answer window; giving up');
-    disarmBtwCapture();
+    giveUpBtwCapture();
   }, BTW_ANSWER_WINDOW_MS);
+  btwCaptureTimer.unref?.();
 }
 
-function currentBtwScreen(): string {
-  return renderer?.rawSnapshot() || lastAnalyzerSnapshot || '';
+/** Screen for reading the overlay. The live renderer (fed every PTY chunk)
+ *  rather than lastAnalyzerSnapshot, which refreshes at most every 2s; with
+ *  preserveFormatting so indentation (question vs. answer, nested lists)
+ *  survives — the display cleanup collapses runs of spaces. */
+function btwOverlayScreen(): string {
+  return renderer?.rawSnapshot({ preserveFormatting: true }) || lastAnalyzerSnapshot || '';
 }
 
-/** Send the captured answer and close the overlay. The overlay swallows
- *  keystrokes, so leaving it open would eat the next message botmux types.
- *  Esc is only sent while the overlay is still on screen — with the overlay
- *  gone, Esc would interrupt the running turn instead. */
+/** Close the overlay, which otherwise swallows the next keystrokes botmux
+ *  types (`f` forks, `x` clears history). Esc is only sent when every screen
+ *  source agrees the overlay is up: with the overlay gone, Esc would
+ *  interrupt the running turn instead. */
+function closeBtwOverlayIfVisible(): void {
+  if (!backend) return;
+  const screens = [renderer?.rawSnapshot({ preserveFormatting: true }), lastAnalyzerSnapshot]
+    .filter((screen): screen is string => !!screen);
+  if (screens.length > 0 && screens.every(claudeBtwOverlayVisible)) {
+    sendTermActionOnce(backend, 'esc');
+  }
+}
+
+function giveUpBtwCapture(): void {
+  closeBtwOverlayIfVisible();
+  disarmBtwCapture();
+}
+
 function deliverBtwAnswer(question: string, answer: string, source: 'clipboard' | 'screen'): void {
   const turnId = btwCaptureTurnId;
   disarmBtwCapture();
   log(`/btw answer captured from ${source} (${answer.length} chars)`);
   send({ type: 'btw_answer', question, answer, ...(turnId ? { turnId } : {}) });
-  if (backend && claudeBtwOverlayVisible(currentBtwScreen())) {
-    sendTermActionOnce(backend, 'esc');
-  }
+  closeBtwOverlayIfVisible();
 }
 
-/** Fallback when no OSC 52 arrives (e.g. a terminal path that drops it):
- *  read the answer from the rendered overlay. */
+function scheduleBtwScreenCheck(): void {
+  if (btwScreenCheckTimer) clearTimeout(btwScreenCheckTimer);
+  btwScreenCheckTimer = setTimeout(checkBtwOverlayScreen, BTW_SCREEN_SETTLE_MS);
+  btwScreenCheckTimer.unref?.();
+}
+
+function checkBtwOverlayScreen(): void {
+  btwScreenCheckTimer = null;
+  if (!backend || btwCaptureGuard.inspectScreen(btwOverlayScreen()).kind !== 'copy') return;
+  btwCopyAttempts += 1;
+  btwCaptureGuard.markCopyRequested();
+  backend.write('c');
+  btwCopyTimer = setTimeout(finishBtwCaptureFromScreen, BTW_COPY_WINDOW_MS);
+  btwCopyTimer.unref?.();
+}
+
+/** No OSC 52 arrived after `c` (e.g. a terminal path that drops it): read
+ *  the answer from the rendered overlay. Only a finished overlay is used; if
+ *  it is (still) answering, wait for the finished footer again. */
 function finishBtwCaptureFromScreen(): void {
   btwCopyTimer = null;
   if (!btwCaptureGuard.isCopying()) return;
-  const overlay = parseClaudeBtwOverlay(currentBtwScreen());
+  const overlay = parseClaudeBtwOverlay(btwOverlayScreen());
   if (overlay?.state === 'done' && overlay.answer) {
-    deliverBtwAnswer(btwCaptureGuard.question || overlay.question, overlay.answer, 'screen');
+    deliverBtwAnswer(btwCaptureGuard.question, overlay.answer, 'screen');
+    return;
+  }
+  if (overlay?.state === 'answering' && btwCopyAttempts < BTW_MAX_COPY_ATTEMPTS) {
+    log('/btw overlay still answering after the copy request; waiting for it to finish');
+    btwCaptureGuard.revertToAnswering();
+    scheduleBtwScreenCheck();
     return;
   }
   log('/btw answer finished but neither the clipboard nor the screen yielded it');
-  disarmBtwCapture();
+  giveUpBtwCapture();
 }
 
 /**
@@ -12894,13 +12940,11 @@ function handlePtyDataChunk(data: string): void {
   // `/btw` side answer relay. Armed only by our own `/btw <question>`
   // passthrough. The keypresses here target the overlay, not the composer.
   if (btwCaptureGuard.isArmed()) {
-    const action = btwCaptureGuard.inspect(data);
-    if (action.kind === 'copy' && backend) {
-      btwCaptureGuard.markCopyRequested();
-      backend.write('c');
-      btwCopyTimer = setTimeout(finishBtwCaptureFromScreen, BTW_COPY_WINDOW_MS);
-    } else if (action.kind === 'answer') {
+    const action = btwCaptureGuard.inspectData(data);
+    if (action.kind === 'answer') {
       deliverBtwAnswer(action.question, action.text, 'clipboard');
+    } else if (!btwCaptureGuard.isCopying()) {
+      scheduleBtwScreenCheck();
     }
   }
 
