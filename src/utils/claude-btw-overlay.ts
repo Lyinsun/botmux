@@ -36,8 +36,9 @@ export type ClaudeBtwCaptureAction =
   | { kind: 'pass' }
   /** The answer finished rendering: press `c` to copy it. */
   | { kind: 'copy' }
-  /** The copied answer arrived as OSC 52. One-shot: the guard is disarmed. */
-  | { kind: 'answer'; text: string };
+  /** The copied answer arrived as OSC 52. One-shot: the guard is disarmed,
+   *  so the question is carried here rather than read back from the guard. */
+  | { kind: 'answer'; text: string; question: string };
 
 type Phase = 'idle' | 'answering' | 'copying';
 
@@ -109,8 +110,9 @@ export class ClaudeBtwCaptureGuard {
       this.rawTail = (this.rawTail + data).slice(-RAW_TAIL_LIMIT);
       const text = extractOsc52Text(this.rawTail);
       if (text !== undefined) {
+        const question = this._question;
         this.disarm();
-        return { kind: 'answer', text };
+        return { kind: 'answer', text, question };
       }
     }
     return { kind: 'pass' };

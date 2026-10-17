@@ -11527,8 +11527,7 @@ function currentBtwScreen(): string {
  *  keystrokes, so leaving it open would eat the next message botmux types.
  *  Esc is only sent while the overlay is still on screen — with the overlay
  *  gone, Esc would interrupt the running turn instead. */
-function deliverBtwAnswer(answer: string, source: 'clipboard' | 'screen'): void {
-  const question = btwCaptureGuard.question;
+function deliverBtwAnswer(question: string, answer: string, source: 'clipboard' | 'screen'): void {
   const turnId = btwCaptureTurnId;
   disarmBtwCapture();
   log(`/btw answer captured from ${source} (${answer.length} chars)`);
@@ -11545,7 +11544,7 @@ function finishBtwCaptureFromScreen(): void {
   if (!btwCaptureGuard.isCopying()) return;
   const overlay = parseClaudeBtwOverlay(currentBtwScreen());
   if (overlay?.state === 'done' && overlay.answer) {
-    deliverBtwAnswer(overlay.answer, 'screen');
+    deliverBtwAnswer(btwCaptureGuard.question || overlay.question, overlay.answer, 'screen');
     return;
   }
   log('/btw answer finished but neither the clipboard nor the screen yielded it');
@@ -12901,7 +12900,7 @@ function handlePtyDataChunk(data: string): void {
       backend.write('c');
       btwCopyTimer = setTimeout(finishBtwCaptureFromScreen, BTW_COPY_WINDOW_MS);
     } else if (action.kind === 'answer') {
-      deliverBtwAnswer(action.text, 'clipboard');
+      deliverBtwAnswer(action.question, action.text, 'clipboard');
     }
   }
 

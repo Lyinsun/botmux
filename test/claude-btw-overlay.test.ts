@@ -98,7 +98,11 @@ describe('ClaudeBtwCaptureGuard', () => {
     expect(guard.isCopying()).toBe(true);
     const payload = osc52('1 + 1 equals 2.\n\n- **bold** item');
     expect(guard.inspect(payload.slice(0, 10))).toEqual({ kind: 'pass' });
-    expect(guard.inspect(payload.slice(10))).toEqual({ kind: 'answer', text: '1 + 1 equals 2.\n\n- **bold** item' });
+    expect(guard.inspect(payload.slice(10))).toEqual({
+      kind: 'answer',
+      text: '1 + 1 equals 2.\n\n- **bold** item',
+      question: 'what is 1+1?',
+    });
     expect(guard.isArmed()).toBe(false);
     expect(guard.question).toBe('');
   });
@@ -174,6 +178,10 @@ describe('/btw relay wiring', () => {
 
   it('disarms on CLI respawn', () => {
     expect(worker).toMatch(/disarmEffortConfirm\(\);\n\s*disarmBtwCapture\(\);\n\s*appRunnerControlDecoder\.reset\(\);/);
+  });
+
+  it('passes the question from the answer action, not the disarmed guard', () => {
+    expect(worker).toContain("deliverBtwAnswer(action.question, action.text, 'clipboard');");
   });
 
   it('daemon replies under the /btw turn', () => {
