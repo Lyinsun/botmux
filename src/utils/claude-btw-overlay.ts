@@ -2,8 +2,9 @@
  * Relay Claude Code's `/btw` side answer back to the IM thread.
  *
  * Claude Code answers `/btw <question>` in a dismissible overlay that never
- * reaches the session transcript. While answering, the overlay footer is a
- * bare `Esc to close`; once finished it reads
+ * reaches the session transcript. While answering, the overlay footer is
+ * `Esc to close`, prefixed by `⇧←/→ to browse · x to clear history · ` once
+ * earlier questions are in the history; once finished it reads
  * `↑/↓ to scroll · c to copy · f to fork · Esc to close`, and pressing `c`
  * makes Claude Code emit the full Markdown answer as an OSC 52 clipboard
  * sequence.
@@ -112,14 +113,28 @@ export class ClaudeBtwCaptureGuard {
     return { kind: 'answer', text, question };
   }
 
+  /**
+   * What to do when `c` produced no OSC 52: deliver this question's finished
+   * overlay text, wait again while it is still answering (up to `maxCopies`
+   * presses), or give up.
+   */
+  copyFallback(
+    overlay: ClaudeBtwOverlay | undefined,
+    copies: number,
+    maxCopies: number,
+  ): { kind: 'deliver'; answer: string } | { kind: 'wait' } | { kind: 'give-up' } {
+    if (!overlay || !this.isOwnQuestion(overlay.question)) return { kind: 'give-up' };
+    if (overlay.state === 'done' && overlay.answer) return { kind: 'deliver', answer: overlay.answer };
+    if (overlay.state === 'answering' && copies < maxCopies) return { kind: 'wait' };
+    return { kind: 'give-up' };
+  }
+
   /** The screen shows only the first visual row of a long question, and
-   *  display snapshots may collapse spaces; compare whitespace-free prefixes. */
+   *  display snapshots may collapse spaces; compare whitespace-free prefixes.
+   *  The on-screen question is never longer than the armed one. */
   private isOwnQuestion(onScreen: string): boolean {
     const key = onScreen.replace(/\s+/g, '');
-    if (!key || !this.questionKey) return false;
-    return key.length <= this.questionKey.length
-      ? this.questionKey.startsWith(key)
-      : key.startsWith(this.questionKey);
+    return key !== '' && this.questionKey.startsWith(key);
   }
 }
 
@@ -147,10 +162,13 @@ export interface ClaudeBtwOverlay {
 }
 
 const QUESTION_LINE_RE = /^(\s*)\/btw\s+(.*\S)\s*$/;
-// Whole-line footers. Finished: optional navigation hint, then the copy
-// shortcut ("Copied to clipboard" right after `c`), optional fork / clear.
-const DONE_FOOTER_RE = /^(\s*)(?:\S[^·]* · )?(?:c to copy|Copied to clipboard) · (?:f to fork · )?(?:x to clear history · )?Esc to close\s*$/;
-const ANSWERING_FOOTER_RE = /^(\s*)Esc to close\s*$/;
+// Whole-line footers. Finished: `·`-separated key hints ending in
+// `Esc to close`, one of them the copy shortcut ("Copied to clipboard" right
+// after `c`). Answering: `Esc to close`, after the history hints once earlier
+// questions exist; only those, so another overlay is not taken for ours.
+const DONE_HINTS = String.raw`(?:(?!c to copy · |Copied to clipboard · )\S[^·\n]* · )*`;
+const DONE_FOOTER_RE = new RegExp(String.raw`^(\s*)${DONE_HINTS}(?:c to copy|Copied to clipboard) · ${DONE_HINTS}Esc to close\s*$`);
+const ANSWERING_FOOTER_RE = /^(\s*)(?:⇧←\/→ to browse · )?(?:x to clear history · )?Esc to close\s*$/;
 const BORDER_RE = /^\s*▔{8,}\s*$/;
 
 /**

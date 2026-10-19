@@ -11592,11 +11592,12 @@ function finishBtwCaptureFromScreen(): void {
   btwCopyTimer = null;
   if (!btwCaptureGuard.isCopying()) return;
   const overlay = parseClaudeBtwOverlay(btwOverlayScreen());
-  if (overlay?.state === 'done' && overlay.answer) {
-    deliverBtwAnswer(btwCaptureGuard.question, overlay.answer, 'screen');
+  const next = btwCaptureGuard.copyFallback(overlay, btwCopyAttempts, BTW_MAX_COPY_ATTEMPTS);
+  if (next.kind === 'deliver') {
+    deliverBtwAnswer(btwCaptureGuard.question, next.answer, 'screen');
     return;
   }
-  if (overlay?.state === 'answering' && btwCopyAttempts < BTW_MAX_COPY_ATTEMPTS) {
+  if (next.kind === 'wait') {
     log('/btw overlay still answering after the copy request; waiting for it to finish');
     btwCaptureGuard.revertToAnswering();
     scheduleBtwScreenCheck();

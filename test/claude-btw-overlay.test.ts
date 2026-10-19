@@ -107,6 +107,18 @@ describe('ClaudeBtwCaptureGuard.inspectScreen', () => {
     expect(guard.inspectScreen(screen('first question', ['a'], DONE_FOOTER))).toEqual({ kind: 'pass' });
   });
 
+  it('matches a truncated on-screen question but not a longer one it is a prefix of', () => {
+    const guard = new ClaudeBtwCaptureGuard();
+    guard.arm('a long question that wraps');
+    guard.inspectScreen(screen('a long question', ['✽ Answering…'], 'Esc to close'));
+    expect(guard.inspectScreen(screen('a long question', ['x'], DONE_FOOTER))).toEqual({ kind: 'copy' });
+
+    const short = new ClaudeBtwCaptureGuard();
+    short.arm('a');
+    short.inspectScreen(screen('ab', ['✽ Answering…'], 'Esc to close'));
+    expect(short.inspectScreen(screen('ab', ['x'], DONE_FOOTER))).toEqual({ kind: 'pass' });
+  });
+
   it('is not triggered by an answer that talks about the shortcuts', () => {
     const q = 'how do I copy your answer?';
     const guard = new ClaudeBtwCaptureGuard();
@@ -195,6 +207,16 @@ describe('parseClaudeBtwOverlay', () => {
     expect(claudeBtwOverlayVisible(ANSWERING_SCREEN)).toBe(true);
   });
 
+  it('never reads a finished footer as answering', () => {
+    for (const footer of [DONE_FOOTER, '⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close', 'c to copy · Esc to close']) {
+      expect(parseClaudeBtwOverlay(screen('q', ['a'], footer))?.state).toBe('done');
+    }
+  });
+
+  it('does not take another overlay with an Esc footer for /btw', () => {
+    expect(parseClaudeBtwOverlay(screen('- ask a side question', ['help'], '↑/↓ to scroll · Esc to close'))).toBeUndefined();
+  });
+
   it('accepts the transient "Copied to clipboard" footer', () => {
     const copied = screen('q', ['a'], '↑/↓ to scroll · Copied to clipboard · f to fork · Esc to close');
     expect(parseClaudeBtwOverlay(copied)?.state).toBe('done');
@@ -275,10 +297,49 @@ describe('real Claude Code PTY bytes through the headless renderer', () => {
     expect(claudeBtwOverlayVisible(view())).toBe(false);
   });
 
+  it('a later /btw is seen answering under the browse/clear-history footer', async () => {
+    // The fixture's second /btw: earlier questions are in the history, so the
+    // answering footer carries the navigation hints. Only this frame gives
+    // the answering evidence before the finished footer.
+    const second = '用两三句话解释 OSC 52 是什么';
+    const r = new TerminalRenderer(159, 51);
+    const guard = new ClaudeBtwCaptureGuard();
+    guard.arm(second);
+    const browse = raw.indexOf('to browse');
+    await r.writeAndFlush(raw.slice(0, cut('Esc to close\x1b[39m\x1b[K\x1b[51;1H', browse)));
+    const view = r.rawSnapshot({ preserveFormatting: true });
+    expect(parseClaudeBtwOverlay(view)).toEqual({ state: 'answering', question: second, answer: '' });
+    expect(guard.inspectScreen(view)).toEqual({ kind: 'pass' });
+    const done = screen(second, ['OSC 52 lets a program set the clipboard.'], '⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close');
+    expect(guard.inspectScreen(done)).toEqual({ kind: 'copy' });
+  });
+
   it('the display-cleaned snapshot also recognises the overlay (Esc gate)', async () => {
     const r = new TerminalRenderer(159, 51);
     await r.writeAndFlush(raw.slice(0, cut('to close\x1b[39m\x1b[51;1H', cut('Esc to close\x1b[39m\x1b[K\x1b[51;1H', 0))));
     expect(claudeBtwOverlayVisible(r.rawSnapshot())).toBe(true);
+  });
+});
+
+describe('ClaudeBtwCaptureGuard.copyFallback', () => {
+  const guard = new ClaudeBtwCaptureGuard();
+  guard.arm('q');
+  const done = { state: 'done', question: 'q', answer: 'a' } as const;
+  const answering = { state: 'answering', question: 'q', answer: '' } as const;
+
+  it('delivers our finished overlay with text', () => {
+    expect(guard.copyFallback(done, 3, 3)).toEqual({ kind: 'deliver', answer: 'a' });
+    expect(guard.copyFallback({ ...done, answer: '' }, 1, 3)).toEqual({ kind: 'give-up' });
+  });
+
+  it('waits while answering, until the copy attempts run out', () => {
+    expect(guard.copyFallback(answering, 2, 3)).toEqual({ kind: 'wait' });
+    expect(guard.copyFallback(answering, 3, 3)).toEqual({ kind: 'give-up' });
+  });
+
+  it('gives up without an overlay or on another question', () => {
+    expect(guard.copyFallback(undefined, 1, 3)).toEqual({ kind: 'give-up' });
+    expect(guard.copyFallback({ ...done, question: 'other' }, 1, 3)).toEqual({ kind: 'give-up' });
   });
 });
 
@@ -353,6 +414,7 @@ describe('/btw relay wiring', () => {
   it('daemon caps long answers and marks screen-read ones as possibly partial', () => {
     const region = between(pool, "case 'btw_answer':", "case 'adopt_preamble':");
     expect(region).toContain('msg.answer.length > BTW_ANSWER_MAX_CHARS');
+    expect(region).toContain('truncateUtf16WellFormed(msg.answer, BTW_ANSWER_MAX_CHARS)');
     expect(region).toContain("if (msg.source === 'screen')");
   });
 });

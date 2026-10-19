@@ -736,6 +736,7 @@ import {
   managedOriginCapabilityPath,
   replaceManagedOriginCapabilityFile,
 } from './managed-origin-capability.js';
+import { truncateUtf16WellFormed } from '../utils/unicode.js';
 
 type WorkerStartupState = {
   ready: boolean;
@@ -18079,7 +18080,7 @@ function setupWorkerHandlers(
         // Feishu cards cap at ~30KB; a side answer is short, so a plain
         // character cap (CJK is 3 bytes) is enough instead of a file fallback.
         let btwAnswer = msg.answer.length > BTW_ANSWER_MAX_CHARS
-          ? `${msg.answer.slice(0, BTW_ANSWER_MAX_CHARS)}\n\n${tr('card.btw_answer_truncated', undefined, loc)}`
+          ? `${truncateUtf16WellFormed(msg.answer, BTW_ANSWER_MAX_CHARS)}\n\n${tr('card.btw_answer_truncated', undefined, loc)}`
           : msg.answer;
         if (msg.source === 'screen') btwAnswer += `\n\n${tr('card.btw_answer_from_screen', undefined, loc)}`;
         const recipientOpenId = daemonCardFooterRecipientOpenId(ds, effectiveCliId);
