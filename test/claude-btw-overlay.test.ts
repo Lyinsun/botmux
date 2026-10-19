@@ -217,6 +217,10 @@ describe('parseClaudeBtwOverlay', () => {
     expect(parseClaudeBtwOverlay(screen('- ask a side question', ['help'], '↑/↓ to scroll · Esc to close'))).toBeUndefined();
   });
 
+  it('accepts several hints before the copy shortcut', () => {
+    expect(parseClaudeBtwOverlay(screen('q', ['a'], '↑/↓ to scroll · ⇧←/→ to browse · c to copy · f to fork · Esc to close'))?.state).toBe('done');
+  });
+
   it('accepts the transient "Copied to clipboard" footer', () => {
     const copied = screen('q', ['a'], '↑/↓ to scroll · Copied to clipboard · f to fork · Esc to close');
     expect(parseClaudeBtwOverlay(copied)?.state).toBe('done');
