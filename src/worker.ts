@@ -113,6 +113,7 @@ import {
   POST_HOOK_EVIDENCE_FALLBACK_MS,
   POST_HOOK_EVIDENCE_RETRY_MS,
 } from './utils/input-gate.js';
+import { promptCacheKeepaliveRefusal } from './core/prompt-cache-keepalive-gate.js';
 import {
   decideCodexRunnerFreshness,
   CodexRunnerFreshnessInputQueue,
@@ -28368,16 +28369,22 @@ process.on('message', async (raw: unknown) => {
 
     case 'prompt_cache_keepalive': {
       // Claude Code prompt-cache keep-alive (core/prompt-cache-keepalive.ts).
-      // Only into a CLI that is quietly idle: anything queued or in flight
-      // means the session is about to read the cache anyway.
-      const refusal = !backend || !cliAdapter ? 'no_backend'
-        : cliRestartInProgress ? 'restarting'
-          : !isPromptReady ? 'prompt_not_ready'
-            : tuiPromptBlocking ? 'tui_prompt_open'
-              : bareShellLaunchBlocked ? 'bare_shell'
-                : isFlushing || injectionFlushing || pendingMessages.length > 0 || pendingRawInputs.length > 0
-                  || pendingInjections.length > 0 || pendingSessionRename !== null ? 'input_pending'
-                  : undefined;
+      // Only into a CLI that is quietly idle AND visibly sitting in its real
+      // composer: a permission dialog / AskUserQuestion picker also reads as
+      // idle, and the Enter would approve it (core/prompt-cache-keepalive-gate.ts).
+      let keepaliveScreen: string | undefined;
+      try { keepaliveScreen = renderer ? renderer.rawSnapshot({ preserveFormatting: true }) : undefined; } catch { keepaliveScreen = undefined; }
+      const refusal = promptCacheKeepaliveRefusal({
+        hasBackend: !!backend && !!cliAdapter,
+        restarting: cliRestartInProgress,
+        promptReady: isPromptReady,
+        tuiPromptOpen: tuiPromptBlocking,
+        bareShell: bareShellLaunchBlocked,
+        inputPending: isFlushing || injectionFlushing || pendingMessages.length > 0 || pendingRawInputs.length > 0
+          || pendingInjections.length > 0 || pendingSessionRename !== null,
+        screen: keepaliveScreen,
+        readyPattern: cliAdapter?.readyPattern,
+      });
       if (refusal) {
         send({ type: 'prompt_cache_keepalive_result', injected: false, reason: refusal });
         break;

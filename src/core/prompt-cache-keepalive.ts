@@ -42,6 +42,10 @@ export function promptCacheKeepaliveIneligibility(ds: DaemonSession): string | u
   if (!ds.worker || ds.worker.killed || !ds.workerReady) return 'no_worker';
   if (!init || init.cliId !== 'claude-code') return 'not_claude_code';
   if (init.adoptMode) return 'adopted';
+  // Zero-prompt sessions carry no botmux system prompt, so the model has no
+  // reason to honour BOTMUX_NOTHING_TO_SEND, and their local-turn finals are
+  // forwarded to the chat: a keep-alive could post into the topic.
+  if (init.promptInjection === 'none') return 'zero_prompt';
   if (!LOCAL_BACKENDS.has(init.backendType)) return 'remote_backend';
   if (ds.lastScreenStatus !== 'idle') return 'not_idle';
   // Background tasks report back into the conversation on their own; a
