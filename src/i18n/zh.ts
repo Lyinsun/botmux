@@ -1950,6 +1950,7 @@ export const messages: Record<string, string> = {
   'card.usage.quota_7d': '7d',
   'card.usage.turn': '本轮',
   'card.usage.total': '累计',
+  'card.usage.cache_hit': '缓存命中',
 
   // Adopt preamble card title
   'card.adopt_last_round': '📜 /adopt 前最后一轮',

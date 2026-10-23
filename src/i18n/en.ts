@@ -1949,6 +1949,7 @@ export const messages: Record<string, string> = {
   'card.usage.quota_7d': '7d',
   'card.usage.turn': 'This turn',
   'card.usage.total': 'Total',
+  'card.usage.cache_hit': 'Cache hit',
 
   // Adopt preamble card title
   'card.adopt_last_round': '📜 Last exchange before /adopt',
