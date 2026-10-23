@@ -1036,6 +1036,19 @@ describe('buildMarkdownCard', () => {
     // A dialect with no cache fields folds to 0/0 — unknown, not 0%.
     expect(seg({ in: 50_000, out: 100, cacheReadTokens: 0, cacheCreateTokens: 0 })).toBe('累计 ↑50K ↓100');
     expect(seg({ in: 50_000, out: 100 })).toBe('累计 ↑50K ↓100');
+    // A remote provider reporting cacheCreate alone (no read field) still shows
+    // an honest 0% rather than hiding cache activity.
+    expect(seg({ in: 50_000, out: 100, cacheCreateTokens: 40_000 })).toBe('累计 ↑50K ↓100 · 缓存命中 0%');
+  });
+
+  it('cache hit rate keeps exact integer percentages under floating point', () => {
+    const seg = (tokens: NonNullable<CardUsageSnapshot['tokens']>) =>
+      cardUsageFooterSegment({ context: null, tokens }, 'zh', 'streaming');
+    // (read / in) * 100 lands on x.99999… for these exact integer ratios;
+    // multiplying first must keep them at 29% / 57% / 58%.
+    expect(seg({ in: 1_000_000, out: 100, cacheReadTokens: 290_000 })).toBe('累计 ↑1M ↓100 · 缓存命中 29%');
+    expect(seg({ in: 1_000_000, out: 100, cacheReadTokens: 570_000 })).toBe('累计 ↑1M ↓100 · 缓存命中 57%');
+    expect(seg({ in: 1_000_000, out: 100, cacheReadTokens: 580_000 })).toBe('累计 ↑1M ↓100 · 缓存命中 58%');
   });
 
   it('keeps the metric formatter runtime-free so the streaming renderer owns the tail', () => {

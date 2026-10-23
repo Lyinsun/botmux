@@ -598,13 +598,22 @@ export function cardUsageFooterSegment(
     );
     // Session cache hit rate: cache reads over the cache-inclusive prompt total.
     // Dialects without cache fields still fold to 0/0, which is "unknown", not
-    // "0% hit" — so require some cache activity. A Claude session whose cache
-    // never hits still writes (cacheCreate > 0) and honestly renders 0%.
-    const cacheRead = usage.tokens.cacheReadTokens;
-    const cacheCreate = usage.tokens.cacheCreateTokens ?? 0;
-    if (isNonNegativeFinite(cacheRead) && (cacheRead > 0 || cacheCreate > 0) && usage.tokens.in > 0) {
+    // "0% hit" — so require one of the counters to be present and non-negative,
+    // and some cache activity. A session whose cache is only written (a remote
+    // provider reporting cacheCreate alone, or a first-turn Claude prompt) thus
+    // honestly renders 0%.
+    const cacheReadRaw = usage.tokens.cacheReadTokens;
+    const cacheCreateRaw = usage.tokens.cacheCreateTokens;
+    const cacheRead = isNonNegativeFinite(cacheReadRaw) ? cacheReadRaw : undefined;
+    const cacheCreate = isNonNegativeFinite(cacheCreateRaw) ? cacheCreateRaw : undefined;
+    if (usage.tokens.in > 0
+      && (cacheRead !== undefined || cacheCreate !== undefined)
+      && ((cacheRead ?? 0) > 0 || (cacheCreate ?? 0) > 0)) {
       // floor, not round: 99.6% must not read as "100%" (everything cached).
-      const pct = Math.min(100, Math.floor((cacheRead / usage.tokens.in) * 100));
+      // Multiply before dividing: (read / in) * 100 lands at x.99999… in
+      // floating point for exact integer percentages (290000 / 1e6 → 28).
+      // Token counts are integers far below 2^53 / 100, so read * 100 is exact.
+      const pct = Math.min(100, Math.floor((cacheRead ?? 0) * 100 / usage.tokens.in));
       parts.push(`${t('card.usage.cache_hit', undefined, locale)} ${pct}%`);
     }
   }
