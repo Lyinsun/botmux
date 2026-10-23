@@ -93,10 +93,13 @@ export function parseActiveHours(text: string): { start: number; end: number } |
 
 /** Start included, end excluded; `start === end` (e.g. 00:00-24:00 folds to
  *  0–1440, 09:00-09:00) means all day; `start > end` crosses midnight. */
+function isAllDayWindow(window: { start: number; end: number }): boolean {
+  return window.start === window.end || (window.start === 0 && window.end === 24 * 60);
+}
+
 export function isWithinActiveHours(window: { start: number; end: number } | undefined, minuteOfDay: number): boolean {
-  if (!window) return true;
+  if (!window || isAllDayWindow(window)) return true;
   const { start, end } = window;
-  if (start === end || (start === 0 && end === 24 * 60)) return true;
   return start < end
     ? minuteOfDay >= start && minuteOfDay < end
     : minuteOfDay >= start || minuteOfDay < end;
@@ -184,7 +187,10 @@ export function resolvePromptCachePolicy(
   // reading it, so the interval is clamped below the lifetime.
   const idleMinutes = Math.min(b.idleMinutes ?? g.idleMinutes ?? defaultIdle, lifetime - 1);
   const activeHoursText = b.activeHours ?? g.activeHours;
-  const activeHours = activeHoursText ? parseActiveHours(activeHoursText) ?? undefined : undefined;
+  const parsedHours = activeHoursText ? parseActiveHours(activeHoursText) ?? undefined : undefined;
+  // `00:00-24:00` / `09:00-09:00` are spelled-out "all day": resolve them to no
+  // window so every consumer (gate, Dashboard summary) treats them alike.
+  const activeHours = parsedHours && !isAllDayWindow(parsedHours) ? parsedHours : undefined;
   return {
     ...(ttl ? { ttl } : {}),
     keepalive: {

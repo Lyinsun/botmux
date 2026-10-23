@@ -110,6 +110,12 @@ describe('resolvePromptCachePolicy', () => {
     expect(resolvePromptCachePolicy({ keepalive: { enabled: true } }, { keepalive: { enabled: false } }).ttl).toBeUndefined();
   });
 
+  it('resolves spelled-out all-day windows to no window', () => {
+    for (const activeHours of ['00:00-24:00', '09:00-09:00']) {
+      expect(resolvePromptCachePolicy({ keepalive: { enabled: true, activeHours } }, undefined).keepalive.activeHours).toBeUndefined();
+    }
+  });
+
   it('clamps the interval below a 5m lifetime', () => {
     const p = resolvePromptCachePolicy({ ttl: '5m', keepalive: { enabled: true, idleMinutes: 30 } }, undefined);
     expect(p.keepalive.idleMinutes).toBe(4);
