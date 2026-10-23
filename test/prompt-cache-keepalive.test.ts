@@ -110,6 +110,7 @@ describe('eligibility', () => {
     [{ initConfig: { cliId: 'claude-code', backendType: 'tmux', adoptMode: true } }, 'adopted'],
     [{ initConfig: { cliId: 'claude-code', backendType: 'tmux', promptInjection: 'none' } }, 'zero_prompt'],
     [{ initConfig: { cliId: 'claude-code', backendType: 'remote-runner' } }, 'remote_backend'],
+    [{ initConfig: { cliId: 'claude-code', backendType: 'zmx' } }, 'remote_backend'],
     [{ lastScreenStatus: 'working' }, 'not_idle'],
     [{ backgroundTaskCount: 2 }, 'background_tasks'],
   ])('%j → %s', (overrides, reason) => {

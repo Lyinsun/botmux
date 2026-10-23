@@ -28373,7 +28373,9 @@ process.on('message', async (raw: unknown) => {
       // composer: a permission dialog / AskUserQuestion picker also reads as
       // idle, and the Enter would approve it (core/prompt-cache-keepalive-gate.ts).
       let keepaliveScreen: string | undefined;
-      try { keepaliveScreen = renderer ? renderer.rawSnapshot({ preserveFormatting: true }) : undefined; } catch { keepaliveScreen = undefined; }
+      if (renderer && backendScreenEvidenceIsAuthoritativeForMutation()) {
+        try { keepaliveScreen = renderer.rawSnapshot({ preserveFormatting: true }); } catch { keepaliveScreen = undefined; }
+      }
       const refusal = promptCacheKeepaliveRefusal({
         hasBackend: !!backend && !!cliAdapter,
         restarting: cliRestartInProgress,

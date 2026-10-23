@@ -25,8 +25,10 @@ import {
   type ResolvedPromptCachePolicy,
 } from '../services/prompt-cache-policy.js';
 
-/** Backends whose CLI runs in a local pane the worker can type into. */
-const LOCAL_BACKENDS = new Set(['pty', 'tmux', 'herdr', 'zellij', 'zmx']);
+/** Backends whose CLI runs in a local pane the worker can type into AND whose
+ *  viewport the worker treats as authoritative (zmx can carry stale scrollback,
+ *  so the keep-alive write gate could not trust it). */
+const LOCAL_BACKENDS = new Set(['pty', 'tmux', 'herdr', 'zellij']);
 
 export function botPromptCachePolicy(bot: Pick<BotConfig, 'promptCache'>): ResolvedPromptCachePolicy {
   return resolvePromptCachePolicy(readGlobalConfig().promptCache, bot.promptCache);

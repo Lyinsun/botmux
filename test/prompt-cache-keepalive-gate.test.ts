@@ -78,6 +78,15 @@ describe('promptCacheKeepaliveRefusal', () => {
     expect(promptCacheKeepaliveRefusal({ ...ok, screen: ASK_USER_QUESTION })).toBe('prompt_not_framed');
   });
 
+  it('refuses a composer holding an unsent draft, allows an empty one', () => {
+    const withLine = (line: string) => COMPOSER.replace('❯ ', line);
+    expect(promptCacheKeepaliveRefusal({ ...ok, screen: withLine('❯ 帮我把这个函数重') })).toBe('composer_not_empty');
+    expect(promptCacheKeepaliveRefusal({ ...ok, screen: withLine('  ❯ half typed') })).toBe('composer_not_empty');
+    // The live empty composer: prompt followed by a non-breaking space.
+    expect(promptCacheKeepaliveRefusal({ ...ok, screen: withLine('❯\u00a0') })).toBeUndefined();
+    expect(promptCacheKeepaliveRefusal({ ...ok, screen: withLine('❯') })).toBeUndefined();
+  });
+
   it('fails closed without an authoritative screen', () => {
     expect(promptCacheKeepaliveRefusal({ ...ok, screen: undefined })).toBe('no_screen_evidence');
     expect(promptCacheKeepaliveRefusal({ ...ok, screen: '' })).toBe('no_screen_evidence');

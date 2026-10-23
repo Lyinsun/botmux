@@ -9,6 +9,14 @@
  * evidence that the cursor sits in the real composer (a prompt framed by input
  * box rules above and below), and fails closed whenever that evidence is
  * missing: a skipped ping costs one cache refresh, a wrong one approves a tool.
+ *
+ * The composer must also be EMPTY: a half-typed draft left in the web or local
+ * terminal still sits between the two rules, and the keep-alive would be
+ * appended to it and submitted as a real turn.
+ *
+ * The caller passes `screen: undefined` for backends whose viewport is not
+ * authoritative (zmx can carry stale scrollback), so they are refused here on
+ * purpose rather than relying on how far a whole-screen scan happens to reach.
  */
 import { claudeActionPrompt } from '../services/claude-action-prompt.js';
 import { screenShowsFramedPrompt } from '../utils/input-gate.js';
@@ -37,7 +45,8 @@ export type PromptCacheKeepaliveRefusal =
   | 'input_pending'
   | 'no_screen_evidence'
   | 'action_prompt_open'
-  | 'prompt_not_framed';
+  | 'prompt_not_framed'
+  | 'composer_not_empty';
 
 /** Why the keep-alive must not be written now; undefined = safe to write. */
 export function promptCacheKeepaliveRefusal(probe: PromptCacheKeepaliveWriteProbe): PromptCacheKeepaliveRefusal | undefined {
@@ -50,5 +59,10 @@ export function promptCacheKeepaliveRefusal(probe: PromptCacheKeepaliveWriteProb
   if (!probe.screen || !probe.readyPattern) return 'no_screen_evidence';
   if (claudeActionPrompt(probe.screen)) return 'action_prompt_open';
   if (!screenShowsFramedPrompt(probe.screen, probe.readyPattern)) return 'prompt_not_framed';
+  // Same line screenShowsFramedPrompt anchored on: the LAST readyPattern hit.
+  // An empty composer renders as `❯` plus (non-breaking) spaces; anything else
+  // after the prompt is an unsent draft.
+  const promptLine = probe.screen.split('\n').reverse().find(line => probe.readyPattern!.test(line)) ?? '';
+  if (promptLine.replace(probe.readyPattern, '').trim() !== '') return 'composer_not_empty';
   return undefined;
 }
