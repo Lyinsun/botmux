@@ -5,6 +5,8 @@ import { cloneSourceDefaultsFrom, openBotOnboarding } from './bot-onboarding.js'
 import { StreamingCardPinToggle } from './streaming-card-pin-toggle.js';
 import { BlockedUsersEditor } from './blocked-users-editor.js';
 import { QuietPresetSection } from './quiet-preset-section.js';
+import { PromptCacheEditor } from './prompt-cache-editor.js';
+import type { PromptCacheConfig } from '../../services/prompt-cache-policy.js';
 import {
   BOT_DEFAULTS_TABS,
   BOT_DEFAULTS_TAB_LABEL_KEYS,
@@ -17,6 +19,7 @@ import {
   fetchBotDefaults,
   fetchCliOptions,
   fetchCardBrandLabelEnabled,
+  fetchGlobalPromptCache,
   fetchDetectedModels,
   fetchDshProfiles,
   createDshProfile,
@@ -1109,6 +1112,10 @@ function BotDefaultsCard(props: {
               <CrossBotSection bot={bot} putCardPref={putCardPref} />
             </section>
             <section className="bd-tile" id={botDefaultsSectionDomId('session-cap')}><SessionCapSection bot={bot} patchBot={patchBot} /></section>
+            {/* 提示缓存 TTL / 保活只对 Claude Code 生效（--settings promptCacheTtl + 注入保活轮）。 */}
+            {bot.cliId === 'claude-code' ? (
+              <section className="bd-tile" id={botDefaultsSectionDomId('prompt-cache')}><PromptCacheSection bot={bot} patchBot={patchBot} /></section>
+            ) : null}
             <section className="bd-tile" id={botDefaultsSectionDomId('startup-commands')}><StartupCommandsSection bot={bot} patchBot={patchBot} lock={props.linkedAgent} /></section>
             <section className="bd-tile" id={botDefaultsSectionDomId('summary-trigger')}><SummaryTriggerSection bot={bot} patchBot={patchBot} putCardPref={putCardPref} /></section>
           </BdTabGrid>
@@ -7571,6 +7578,47 @@ function SessionCapSection(props: { bot: BotDefaultsRow; patchBot: PatchBot }) {
         <button type="button" data-action="off-idle-ttl" disabled={busy} onClick={() => { setTtlInput(''); void saveTtl(null); }}>{tr('botDefaults.idleSuspendMinutesOff')}</button>
         <StatusSpan status={status} attr={{ 'data-session-cap-status': '' }} />
       </div>
+    </section>
+  );
+}
+
+function PromptCacheSection(props: { bot: BotDefaultsRow; patchBot: PatchBot }) {
+  const tr = useT();
+  const [globalValue, setGlobalValue] = useState<PromptCacheConfig | null>(null);
+  const [status, setStatus] = useState<StatusMessage>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void fetchGlobalPromptCache().then(value => { if (alive) setGlobalValue(value); });
+    return () => { alive = false; };
+  }, []);
+
+  async function save(value: PromptCacheConfig | null): Promise<void> {
+    await saveBotField({
+      request: () => sendJson('PUT', `/api/bots/${encodeURIComponent(props.bot.larkAppId)}/prompt-cache`, { promptCache: value }),
+      setStatus,
+      setBusy,
+      saved: tr('botDefaults.cardPrefSaved'),
+      onSaved: body => {
+        const next = body.promptCache && typeof body.promptCache === 'object' ? body.promptCache as PromptCacheConfig : null;
+        props.patchBot(props.bot.larkAppId, { promptCache: next });
+      },
+    });
+  }
+
+  return (
+    <section className="bd-section">
+      <h3 className="bd-section-title">{tr('botDefaults.sectionPromptCache')}</h3>
+      <small className="bd-section-note">{tr('botDefaults.promptCacheNote')}</small>
+      <PromptCacheEditor
+        scope="bot"
+        value={props.bot.promptCache ?? null}
+        globalValue={globalValue}
+        disabled={busy}
+        onSave={save}
+      />
+      <StatusSpan status={status} attr={{ 'data-prompt-cache-status': '' }} />
     </section>
   );
 }

@@ -220,6 +220,9 @@ export interface CliAdapter {
     replyDelivery?: 'send' | 'transcript';
     /** Disable all Botmux-owned prompt and skill injection for this spawn. */
     promptInjection?: 'default' | 'none';
+    /** Claude Code only: prompt-cache lifetime written into the process-level
+     *  `--settings` as `promptCacheTtl` (global ⊕ bot `promptCache`). */
+    promptCacheTtl?: import('../../services/prompt-cache-policy.js').PromptCacheTtl;
     /** transcript-only: this session is a solo chat (owner + this bot). Drops
      *  the identity routing_rules (no other bot to route to). Ignored for
      *  'send'. */

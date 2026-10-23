@@ -39,6 +39,7 @@ import { normalizeEnvPolicy } from '../core/env-policy.js';
 import { normalizeFeedbackPolicy } from './feedback-policy.js';
 import { normalizeOncallGroupPolicy } from './oncall-group-policy.js';
 import { normalizeNoProgressNotifyPolicy } from './no-progress-notify-policy.js';
+import { normalizePromptCacheConfig } from './prompt-cache-policy.js';
 import { normalizeFeedbackPolicyLayer, type FeedbackPolicyLayer } from './feedback-policy-resolver.js';
 import {
   notifyPinStreamingCardChanged,
@@ -159,6 +160,7 @@ export const CONFIG_FIELDS: readonly ConfigFieldSpec[] = [
   { key: 'codexCapacityRecovery', configKey: 'codexCapacityRecovery', kind: 'boolean', effect: 'immediate', clearable: true, hint: 'Codex 模型容量不足时自动续跑 on|off（默认 off）：仅明确 server_overloaded；每个任务最多注入两条续跑输入，可能留在原生上下文；非普通限流重试' },
   { key: 'suppressDeliveredFinalFailureNotice', configKey: 'suppressDeliveredFinalFailureNotice', kind: 'boolean', effect: 'next-session', clearable: true, hint: '实验性：已送达 final 后不再补发失败通知 on|off（默认 off）：同一轮同一次尝试已带回执送达显式 final 后，结构化转写（Codex 等）收尾失败只记日志、不再发「模型连接失败」；信任该 final，不比对事后续写文本；执行状态仍为失败；下个 worker 启动生效' },
   { key: 'noProgressNotify', configKey: 'noProgressNotify', kind: 'json', effect: 'immediate', clearable: true, hint: 'Codex App 无进展提醒（#1162）：{"enabled":false} 仅静默 Lark 推送（看板 stalled 状态与 requires_attention 保留，立即生效）；{"timeoutMs":300000} 调整阈值（整数 10000–3600000ms，默认 90000，下一个 worker 进程生效，不影响对账超时）；unset 回默认' },
+  { key: 'promptCache', configKey: 'promptCache', kind: 'json', effect: 'immediate', clearable: true, hint: 'Claude Code 提示缓存：{"ttl":"1h","keepalive":{"enabled":true,"idleMinutes":54,"maxPings":2,"activeHours":"10:00-23:00","minContextTokens":50000}}；逐字段覆盖全局 promptCache，未设的字段继承全局；ttl 下个会话生效，保活立即生效；unset 回落全局' },
   { key: 'promptInjection', configKey: 'promptInjection', kind: 'enum', effect: 'next-session', clearable: true, enumValues: ['default', 'none'], enumDefault: 'default', hint: '零 botmux 注入：none=仅传任务与附件，自动回传最终回复；default=恢复原有提示/技能配置。支持可自动获取最终回复的本地 CLI；新会话完整生效，已有历史不清除' },
   { key: 'envelopeInjection', configKey: 'envelopeInjection', kind: 'enum', effect: 'immediate', clearable: true, enumValues: ['auto', 'off'], hint: '每轮上下文注入方式：auto=支持的 CLI（claude-code）把提醒/白板经 hook 注入为系统提醒，输入框只留消息本身，不支持的自动回退｜off=内联（默认）；unset 回 off' },
   { key: 'topicUnavailablePolicy', configKey: 'topicUnavailablePolicy', kind: 'enum', effect: 'immediate', clearable: true, enumValues: ['legacy', 'stop'], enumDefault: () => 'legacy', hint: '原话题不可用时：legacy=保持原有发送和兜底行为（默认）｜stop=停止发送，查询异常暂停且不改发；unset 回 legacy' },
@@ -984,7 +986,7 @@ export type CoerceResult =
   | { ok: true; value: unknown }
   // A few reasons carry detail (e.g. which keys were rejected), so this is a
   // union of literals plus those prefixed forms rather than a closed literal set.
-  | { ok: false; reason: 'invalid_bool' | 'invalid_enum' | 'invalid_cli' | 'invalid_dir' | 'invalid_number' | 'invalid_json' | 'invalid_env' | 'reserved_env' | 'empty' | 'too_long' | `invalid_mojo_config: ${string}` | `invalid_herdr_config: ${string}` | `invalid_remote_runner_config: ${string}` | `invalid_trigger_user_auth: ${string}` | `invalid_no_progress_notify: ${string}` };
+  | { ok: false; reason: 'invalid_bool' | 'invalid_enum' | 'invalid_cli' | 'invalid_dir' | 'invalid_number' | 'invalid_json' | 'invalid_env' | 'reserved_env' | 'empty' | 'too_long' | `invalid_mojo_config: ${string}` | `invalid_herdr_config: ${string}` | `invalid_remote_runner_config: ${string}` | `invalid_trigger_user_auth: ${string}` | `invalid_no_progress_notify: ${string}` | `invalid_prompt_cache: ${string}` };
 
 /** herdr 块全部可写字段；与 normalizeHerdrBackendConfig 接受的键必须一致（有 parity 测试）。 */
 export const HERDR_FIELD_NAMES = ['sessionName', 'placement', 'workspace', 'tab', 'splitDirection', 'chatTypes'] as const;
@@ -1106,6 +1108,12 @@ export function coerceConfigValue(spec: ConfigFieldSpec, raw: unknown): CoerceRe
             const bindings = normalizeBotActorOwnerBindings(parsed);
             return bindings ? { ok: true, value: bindings } : { ok: false, reason: 'invalid_json' };
           } catch { return { ok: false, reason: 'invalid_json' }; }
+        }
+        if (spec.configKey === 'promptCache') {
+          try {
+            const policy = normalizePromptCacheConfig(parsed);
+            return policy ? { ok: true, value: policy } : { ok: false, reason: 'empty' };
+          } catch (error) { return { ok: false, reason: `invalid_prompt_cache: ${error instanceof Error ? error.message : String(error)}` }; }
         }
         if (spec.configKey === 'noProgressNotify') {
           try { return { ok: true, value: normalizeNoProgressNotifyPolicy(parsed) }; }

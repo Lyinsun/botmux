@@ -20776,6 +20776,7 @@ async function spawnCli(
     // replyDelivery=transcript + solo：daemon 冻结在 init 上的值，系统提示改口用。
     replyDelivery: cfg.replyDelivery,
     promptInjection: cfg.promptInjection,
+    promptCacheTtl: cfg.promptCacheTtl,
     solo: cfg.solo,
     locale: cfg.locale,
     model: ttadkGateway ? undefined : cfg.model,
@@ -28362,6 +28363,33 @@ process.on('message', async (raw: unknown) => {
       // disarmed until the next real stall. t/Esc and all ScreenAnalyzer cards
       // never set this flag.
       if (shouldRearmStuckDetector(!!msg.rearmStuckDetector, wroteKeys)) stuckDetector?.arm();
+      break;
+    }
+
+    case 'prompt_cache_keepalive': {
+      // Claude Code prompt-cache keep-alive (core/prompt-cache-keepalive.ts).
+      // Only into a CLI that is quietly idle: anything queued or in flight
+      // means the session is about to read the cache anyway.
+      const refusal = !backend || !cliAdapter ? 'no_backend'
+        : cliRestartInProgress ? 'restarting'
+          : !isPromptReady ? 'prompt_not_ready'
+            : tuiPromptBlocking ? 'tui_prompt_open'
+              : bareShellLaunchBlocked ? 'bare_shell'
+                : isFlushing || injectionFlushing || pendingMessages.length > 0 || pendingRawInputs.length > 0
+                  || pendingInjections.length > 0 || pendingSessionRename !== null ? 'input_pending'
+                  : undefined;
+      if (refusal) {
+        send({ type: 'prompt_cache_keepalive_result', injected: false, reason: refusal });
+        break;
+      }
+      // The keep-alive belongs to no botmux turn: drop the previous turn's
+      // identity so its screen updates cannot flip that turn's reply card back
+      // to "working" or be attributed to it in any way.
+      setCaptureIdentity(undefined, undefined);
+      pendingInjections.push({ command: msg.text, barrier: false });
+      send({ type: 'prompt_cache_keepalive_result', injected: true });
+      log('Prompt-cache keep-alive queued');
+      void flushPendingInjections();
       break;
     }
 

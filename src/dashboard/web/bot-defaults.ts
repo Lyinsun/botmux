@@ -100,6 +100,7 @@ export const BOT_DEFAULTS_SECTIONS: readonly BotDefaultsSection[] = [
   },
   { id: 'cross-bot', tab: 'sessions', titleKey: 'botDefaults.sectionCrossBot', fieldKeys: ['botDefaults.botToBotSameDir'] },
   { id: 'session-cap', tab: 'sessions', titleKey: 'botDefaults.sectionSessionCap', fieldKeys: ['botDefaults.maxLiveWorkers', 'botDefaults.idleSuspendMinutes'] },
+  { id: 'prompt-cache', tab: 'sessions', titleKey: 'botDefaults.sectionPromptCache', fieldKeys: ['promptCache.ttl', 'promptCache.keepalive'] },
   { id: 'startup-commands', tab: 'sessions', titleKey: 'botDefaults.sectionStartupCommands' },
   { id: 'summary-trigger', tab: 'sessions', titleKey: 'botDefaults.sectionSummaryTrigger', fieldKeys: ['botDefaults.summaryMemory'] },
   { id: 'sandbox', tab: 'security', titleKey: 'botDefaults.sectionSandbox' },
@@ -412,6 +413,8 @@ export type BotDefaultsRow = {
   oncallGroup?: import('../../services/oncall-group-policy.js').OncallGroupPolicy | null;
   /** Codex App 无进展提醒（#1162）。null = 默认（开启，90s）。 */
   noProgressNotify?: import('../../services/no-progress-notify-policy.js').NoProgressNotifyPolicy | null;
+  /** Per-bot prompt-cache override; null/absent = inherit the global default. */
+  promptCache?: import('../../services/prompt-cache-policy.js').PromptCacheConfig | null;
   docSubscribeDefaultMode?: string;
   maxLiveWorkers?: number | null;
   idleSuspendMinutes?: number | null;
@@ -726,6 +729,20 @@ export async function resolveSubstituteTarget(
     return { ok: true, resolution: body?.resolution ?? {} };
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) };
+  }
+}
+
+/** Machine-wide prompt-cache default from GET /api/settings; null when unset
+ *  or unreadable (the bot section then resolves against built-in defaults). */
+export async function fetchGlobalPromptCache(): Promise<import('../../services/prompt-cache-policy.js').PromptCacheConfig | null> {
+  try {
+    const r = await fetch('/api/settings');
+    if (!r.ok) return null;
+    const body = await r.json().catch(() => ({}));
+    const { readPromptCacheConfig } = await import('../../services/prompt-cache-policy.js');
+    return readPromptCacheConfig(body?.settings?.promptCache) ?? null;
+  } catch {
+    return null;
   }
 }
 

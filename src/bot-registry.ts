@@ -72,6 +72,7 @@ import {
 import type { FeedbackPolicy, FeedbackPolicyInput } from './services/feedback-policy.js';
 import { normalizeOncallGroupPolicy, type OncallGroupPolicy } from './services/oncall-group-policy.js';
 import { normalizeNoProgressNotifyPolicy, type NoProgressNotifyPolicy } from './services/no-progress-notify-policy.js';
+import { normalizePromptCacheConfig, type PromptCacheConfig } from './services/prompt-cache-policy.js';
 import { normalizeLinkRefConfig } from './services/link-ref-config.js';
 import type { LinkRefConfig } from './services/link-ref-types.js';
 import { normalizeFeedbackPolicyLayer } from './services/feedback-policy-resolver.js';
@@ -1623,6 +1624,14 @@ export interface BotConfig {
    * keep-pending window. Missing preserves the built-in defaults (on, 90s).
    */
   noProgressNotify?: NoProgressNotifyPolicy;
+  /**
+   * Claude Code only: prompt-cache TTL and idle keep-alive for this bot. Each
+   * field overrides the machine-wide `promptCache` in config.json; whatever is
+   * unset here inherits it (services/prompt-cache-policy.ts). Missing on both
+   * layers = off. `ttl` applies from the next CLI spawn; keep-alive is read
+   * live by the daemon's idle sweep.
+   */
+  promptCache?: PromptCacheConfig;
   /**
    * Codex App only, explicit opt-in: expose a restricted browser dynamic tool
    * backed by the locally installed Codex Chrome/Edge extension plugin.
@@ -3993,6 +4002,18 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       codexCapacityRecovery: entry.codexCapacityRecovery === true || undefined,
       suppressDeliveredFinalFailureNotice: entry.suppressDeliveredFinalFailureNotice === true || undefined,
       noProgressNotify: entry.noProgressNotify === undefined ? undefined : normalizeNoProgressNotifyPolicy(entry.noProgressNotify),
+      promptCache: (() => {
+        if (entry.promptCache === undefined) return undefined;
+        try {
+          return normalizePromptCacheConfig(entry.promptCache);
+        } catch (error) {
+          logger.warn(
+            `[bot-registry:${entry.larkAppId}] ignoring invalid promptCache: `
+            + `${error instanceof Error ? error.message : String(error)}`,
+          );
+          return undefined;
+        }
+      })(),
       feedback: entry.feedback === undefined
         ? undefined
         : normalizeFeedbackPolicyLayer(entry.feedback),
